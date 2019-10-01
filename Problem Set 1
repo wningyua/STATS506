@@ -1,4 +1,4 @@
-#Problem 1
+#Question 1
 #!/bin/env bash
 # Stats 506, Fall 2019
 # This script contains solutions for
@@ -47,5 +47,5 @@ cols=$(grep -En 'DOEID|^BRRWT' recs_names.txt | awk '{print $1}' FS=":" |paste -
 #d. alternative (by NW)
 <recs2015_public_v4 cut -d, -f$echo ${cols} > recs_weights
 #--------------------------------------------------------------------------------------------------------
-#Problem 2
+#Question 2
 
