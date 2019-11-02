@@ -35,6 +35,14 @@ sim_nine = function( n = 1, team = c('mw', 'dd', 'tt') ) {
   team = match.arg(team)
   
 #<Task 1> Improve the block of code using vectorization. 
+  # runs = matrix(NA, 9, n)
+  #for ( game in 1:n ){
+  #  for ( inning in 1:9 ){
+  #    runs[inning, game] = sim_inning(n = 1, team = team)
+  #  }
+  #}
+  #apply(runs, 2, sum)
+  
   runs = matrix(data = sim_inning( 9 * n ), nrow = 9, ncol = n)
   colSums(runs)
 }
