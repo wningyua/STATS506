@@ -1,0 +1,404 @@
+---
+title: "Problem Set 2"
+author: "Ningyuan Wang"
+date: "10/12/2019"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#libraries
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(mousetrap)
+library(stringr)
+library(lme4)
+```
+This is solution for the problem set 2 for STATS 506 in fall 2019. 
+
+## Problem 1
+There are several questions using 2015 RECS survey data for answering. All point estimates are weighted and corresponding confidnce intervals are attached (except the weighted median, since confidence interval does not work on that). 
+
+```{r, warning=FALSE, message =FALSE, echo=FALSE}
+#read in the data
+
+url_base = paste0('https://www.eia.gov/consumption/residential/data/2015/csv')
+csv_file = './recs2015_public_v4.csv'
+csv_url = sprintf('%s/recs2015_public_v4.csv', url_base)
+recs_tb = readr::read_delim(csv_url, delim = ',') 
+#write_delim(recs_tb, path = csv_file, delim = ',') #recs_tb
+
+# weights data
+weights = recs_tb %>%
+  select(DOEID = DOEID, nweight = NWEIGHT, starts_with("BRRWT")) # weights
+
+# Convert weights to long
+weights_long = weights %>%
+  gather(key = 'repl', value = 'w', BRRWT1:BRRWT96)
+```
+
+a. 
+The national weighted average home temperature at night in winter, among homes that use space heating is 68.1 F. The table shows the estimate of weighted average temperature and its confidence interval. 
+```{r, warning=FALSE, message =FALSE, echo = FALSE}
+# sample weighted mean
+temp_mean = recs_tb %>%
+  transmute(tempnite = na_if(TEMPNITE, -2), 
+              heathome = HEATHOME, 
+              weight = NWEIGHT) %>%
+  filter(heathome == 1) %>%
+  mutate( homes = sum(weight), temps = sum(weight*tempnite), 
+             temp_mean = temps / homes) %>%
+  select(temp_mean) %>%
+  distinct() # temp_mean = 68.1
+```
+
+```{r, warning=FALSE, message =FALSE, echo = FALSE}
+# replicate weighted means and compute ci
+rep_mean = weights_long %>%
+  left_join(recs_tb %>%
+              mutate(DOEID = as.integer(DOEID), by ='DOEID')) %>%
+  transmute(tempnite = TEMPNITE, 
+            heathome = HEATHOME, 
+            repl = repl,
+            w =w) %>%
+  filter(tempnite > 0, heathome == 1) %>%
+  group_by(repl) %>%
+  summarize( homes = sum(w), temps = sum(w*tempnite), 
+             rep_mean = temps / homes) %>% # rep_mean 
+  group_by(repl) %>%
+  summarize(temp_mean = 68.1, diff_square = (rep_mean - temp_mean)^2) %>%
+  ungroup() %>%
+  mutate(temp_mean = temp_mean,
+            sum_sqr = sum(diff_square), se = sqrt(1/ (96 * (1-0.5)^2) * sum_sqr)) %>% #0.199 
+    transmute(est = temp_mean, se_est = se, 
+            lwr = est - qnorm(.975) * se, 
+            upr = est + qnorm(.975) * se)%>%
+    distinct() 
+```
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# to produce a table 
+cap_mean ="National Average Home Temperatrure At Night"
+knitr::kable(rep_mean, 
+             col.names= c("Estimate", "Standard Error", "Lower Bound", "Upper Bound"),
+             caption = cap_mean, align = 'c', digits =2)
+```
+
+b. The table shows the weighted proportion of homes using each level of "main space heating fuel" within each unique combination of census division and urban type among home that use space heating. Consider to the space limited, here are partial results only. The lower bounds of estimates are foreced to 0 if it is negative in the context.
+```{r, warning=FALSE, message =FALSE, echo=FALSE }
+# sample weighted proportion 
+home_prop = recs_tb %>%
+  filter(HEATHOME == 1) %>% #keep the homes that using space heating only
+  transmute(division = DIVISION, type = UATYP10, 
+            fuel = FUELHEAT, weight = NWEIGHT) %>%
+  complete(division, type) %>%
+  replace_na(list(fuel = -2))  %>% #replace missing values with NA
+  drop_na() %>%
+  group_by(division, type, fuel) %>% 
+  summarize( homes = sum(weight)) %>%
+  group_by(fuel) %>%
+  mutate( home_prop = 100 * homes / sum(homes))  #124 levels 
+```
+
+```{r, warning=FALSE, message =FALSE, echo = FALSE}
+# replicated weighted proportion
+rep_prop = weights_long %>%
+  left_join(recs_tb %>%
+              mutate(DOEID = as.integer(DOEID), by = 'DOEID')) %>%
+  filter(HEATHOME == 1) %>%
+  transmute(division = DIVISION, type = UATYP10, 
+            fuel = FUELHEAT, 
+            repl = repl, w = w) %>%
+  complete(division, type) %>%
+  replace_na(list(fuel = -2))  %>% #replace missing values with NA
+  drop_na() %>%
+  group_by(division, type, fuel, repl) %>%
+  summarize( homes_r = sum(w)) %>%
+  group_by(fuel, repl) %>%
+  mutate(rep_prop_r = 100 * homes_r / sum(homes_r)) %>% #rep_prop 
+  ungroup() %>% 
+  left_join(home_prop, by = c("division", "type", "fuel"))
+  
+```
+
+```{r,warning=FALSE, message =FALSE, echo = FALSE}
+# compute standard errors
+prop_ci = rep_prop %>%
+    group_by(division, type, fuel, repl) %>%
+    mutate(diff_squares = (rep_prop_r - home_prop)^2)%>%
+    ungroup() %>%
+    group_by(division, type, fuel) %>%
+    mutate(se =sqrt( 4 * (sum(diff_squares) / 96))) %>%
+    select(division, type, fuel, home_prop, se) %>%
+    distinct() %>%
+    mutate(lwr =max(0,home_prop - qnorm(.975) * se) ,
+           upr = home_prop + qnorm(.975) * se )%>%
+    ungroup()
+```
+
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# to produce a table
+caps_prop = "Proportion of Homes Using Fuel"
+
+prop_ci %>%
+  arrange(home_prop) %>%
+  transmute( 'Census Division' = division,
+             'Urban Type' = type,
+             'Fuel' = fuel,
+             'Proportion' = sprintf('%6.1f (%.1f, %.1f)', home_prop, lwr, upr)) %>%
+  knitr::kable(caption = caps_prop, digits = 2) %>% head(20)
+
+  
+```
+
+
+c. The plot compares the weighted average winter home temperatures at night, during the day with someone home, and during the day with no one home by census division and urban type. A corresponding table shows confidence interval of proportion estimtaes. For space limited, as above question, here are partial results from the entire table. 
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# sample weighted means 
+temps_mean = recs_tb %>%
+  transmute(division = DIVISION, type = UATYP10, temp_home =na_if(TEMPHOME, -2),
+            temp_gone =na_if(TEMPGONE,-2), temp_nite = na_if(TEMPNITE, -2), 
+            weight = NWEIGHT) %>% 
+  drop_na() %>%
+  group_by(division, type) %>%
+  summarize(homes = sum(weight),
+            temp_nite_mean = sum(weight * temp_nite) / homes,
+            temp_gone_mean = sum(weight * temp_gone) / homes,
+            temp_home_mean = sum(weight * temp_home) / homes
+            ) 
+```
+
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# replicated weighted means  
+temps_rep = weights_long %>%
+  left_join(recs_tb %>%
+              mutate(DOEID = as.integer(DOEID), by ='DOEID')) %>%
+  transmute(division = DIVISION, type = UATYP10, temp_home =na_if(TEMPHOME, -2),
+            temp_gone =na_if(TEMPGONE,-2), temp_nite = na_if(TEMPNITE, -2), 
+            repl = repl, w = w) %>%
+  drop_na() %>%
+  group_by(division, type, repl) %>%
+  summarize(homes = sum(w), 
+            nite_r = sum(w * temp_nite) / homes,
+            gone_r = sum(w * temp_gone) / homes,
+            home_r = sum(w * temp_home) / homes
+            ) %>% #temps_rep 
+  ungroup() %>% 
+  left_join(temps_mean, by = c("division", "type"))
+```
+
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# compute standard error and confidence interval 
+temps_ci = temps_rep %>%
+  group_by(division, type, repl) %>%
+  mutate(diffs_nite = (nite_r - temp_nite_mean)^2,
+         diffs_gone = (gone_r - temp_gone_mean)^2,
+         diffs_home = (home_r - temp_home_mean)^2
+         ) %>%
+  ungroup() %>%
+  group_by(division, type) %>%
+  mutate(se_nite =sqrt( 4 * (sum(diffs_nite) / 96)),
+         se_gone = sqrt(4 * (sum(diffs_gone) / 96)),
+         se_home = sqrt(4 * (sum(diffs_home) / 96))) %>%
+  select(division, type, temp_nite_mean, se_nite,
+         temp_home_mean, se_home, 
+         temp_gone_mean, se_gone) %>%
+  distinct() %>%
+  mutate( nite_lwr = temp_nite_mean - qnorm(.975) * se_nite,
+          nite_upr = temp_nite_mean + qnorm(.975) * se_nite,
+          home_lwr = temp_home_mean - qnorm(.975) * se_home,
+          home_upr = temp_home_mean + qnorm(.975) * se_home,
+          gone_lwr = temp_gone_mean - qnorm(.975) * se_gone,
+          gone_upr = temp_gone_mean + qnorm(.975) * se_gone
+          ) %>%
+  select(division, type, temp_nite_mean, nite_lwr, nite_upr,
+         temp_home_mean, home_lwr, home_upr, temp_gone_mean, 
+         gone_lwr, gone_upr) %>%
+  ungroup()
+```
+
+
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# plot the average temperatures
+plot_temps = gather(data = temps_mean,temp_type, temp, temp_nite_mean:temp_home_mean, 
+                    factor_key = TRUE) # convert the wide data to a long one
+
+ggplot(plot_temps) +
+  aes(x = `type`, y = temp, colour = temp_type) +
+  geom_boxplot(fill = "#0c4c8a") +
+  scale_color_hue() +
+  theme_gray() +
+  facet_wrap(vars(`division`))
+```
+
+
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# to produce a table
+cap_temps = "Temperatures by Division and Urban Type"
+temps_ci %>%
+  transmute('Divison' = division,
+            'Type' = type,
+            "Nite" =  sprintf('%6.1f (%.1f, %.1f)', temp_nite_mean, nite_lwr, nite_upr),
+            "Home" =  sprintf('%6.1f (%.1f, %.1f)', temp_home_mean, home_lwr, home_upr),
+            "Gone" =  sprintf('%6.1f (%.1f, %.1f)', temp_gone_mean, gone_lwr, gone_upr)) %>%
+  knitr::kable(caption = cap_temps, digits = 2) %>% head(20)
+
+```
+
+d. The table shows national median difference between daytime and nighttime temperatures for each level of main heating equipment household behavior among home that uses space heating. 
+
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# compute median difference
+median_recs_tb = recs_tb %>%
+  filter(HEATHOME == 1) %>% # homes that use speace heating only 
+  transmute(temp_home = na_if(TEMPHOME, -2), 
+            temp_nite = na_if(TEMPNITE, -2), 
+            behav = na_if(EQUIPMUSE, -9),
+            weight = NWEIGHT)%>% #replace missing values with NA
+  drop_na() %>%
+  group_by(behav) %>%
+  mutate(diffs = temp_home - temp_nite) %>%
+  arrange(behav,diffs ) %>%
+  group_by(behav, diffs) %>%
+  summarize_at(vars(weight), funs(sum)) %>% 
+  mutate( cum = cumsum(weight), prop = cum /max(cum)) %>%
+  filter(prop > 1/2 ) %>%
+  slice(which.min(prop))  %>%
+  select(behav, diffs)
+```
+
+```{r,  echo = FALSE, warning=FALSE, message =FALSE}
+# to produce a table
+cap_median = "National Median Difference between Day Time and Night Time Temperature"
+name = c('Behavior Level', 'Median Difference')
+knitr::kable(median_recs_tb, caption = cap_median,
+             col.names = name, digits = 2)
+```
+
+\pagebreak 
+
+## Problem 2
+
+The problem is about mouse-tracking experiments, we use the raw data from the package to create tidy data and build linear mixed effect models. 
+```{r, echo = FALSE, warning=FALSE, message =FALSE}
+# Read in the data
+dt = mousetrap::KH2017_raw
+```
+
+a. Crete a file called ps2_q2_funcs.R which contains functions from previous problem set. 
+```{r, warning=FALSE, message =FALSE}
+# utility functions
+source('./ps2_q2_funcs.R')
+```
+
+b. Examine the raw data and write a function to extract x, y, t components of a trajectory into a numeric vector. Apply the function to the data to represent the trajectories in a numeric format. A part of new data set shows as follows. 
+```{r, warning=FALSE, message =FALSE, echo = FALSE}
+# get the position columns
+x_pos = dt$xpos_get_response 
+y_pos = dt$ypos_get_response
+t_pos = dt$timestamps_get_response
+sub_pos = dt$subject_nr
+tra_pos = dt$count_trial
+
+# extract xyt
+extract_xyt = function(pos){
+  # the function extract the coordinates (xyt) from lists of columns
+  # input: the column of x, y or t
+  # output: the list of characters of coordinate x, y or t
+  pos_sub = str_replace_all(pos, "\\[|\\]", "" )
+  str_split(pos_sub, ', ')
+}
+
+# call above function and combine xyt with trial and subject to create 
+# a new dataframe
+traj_df = dt  %>% 
+  transmute(subject =subject_nr, trail = count_trial, 
+            x = extract_xyt(x_pos), y = extract_xyt(y_pos), 
+            t = extract_xyt(t_pos)) %>%
+  unnest(cols = c('x', 'y', 't')) %>%
+  mutate_if(is.character, as.numeric) # traj_df
+
+# show the data
+traj_df %>% head(10)
+traj_df
+```
+
+
+
+
+```{r}
+# 一会儿删
+dt_out %>%readr:: write_delim(path = "measure_df.csv", delim = ',', na = " ")
+
+```
+
+c. Use the functions in part (a) file to compute the curvature measures and create a tidy data frame. A part of tidy data frame shows as follows.
+```{r, warning=FALSE, message =FALSE, echo = FALSE}
+convert_vec2tibble = function(x) as_tibble( as.list(x) ) #Formats output of comp_measures() as a tibble
+
+
+comp_results = 
+  traj_df %>% 
+  group_by(subject, trail) %>%
+  do( convert_vec2tibble( 
+    comp_measures( normalize_traj( cbind(.$x, .$y, .$t ) ) )
+  ) 
+  ) #comp_results
+
+# store the curvature results
+dt_out = dt %>% 
+  bind_cols(comp_results) %>%
+  filter(correct == 1) %>%
+  transmute('Subject' = subject,
+         'Trail' = trail, 
+         'Condition' = Condition,
+         'Exemplar' = Exemplar,
+         'Total Distance' = tot_dist,
+         'Max Abs Dev' = max_abs_dev,
+         'Avg Abs Dev' = avg_abs_dev,
+         'AUC' = AUC
+         ) #dt_out
+
+# show the data
+dt_out %>% head(10)
+```
+
+d. Fit linear mixed models (with a log transformation in response) exploring how each curvature measure differs by condition. Comparing the coefficient on the fixed effect condition, we conclude that condition has largest effect in the model of average absolute deviation. 
+
+```{r, warning=FALSE, message =FALSE, echo = FALSE}
+# build linear mixed-effect models for different curavtures 
+# and compare the relative fixed effect 
+mod_dist = lmer(log(`Total Distance`) ~ Condition + (1 | Subject) + (1 | Exemplar), 
+                  data = dt_out, REML = FALSE) # lmer model for tot_dist
+Dist = fixef(mod_dist)[2]
+
+mod_max = lmer(log(`Max Abs Dev`) ~ Condition + (1 | Subject) + (1 | Exemplar), 
+                data = dt_out, REML = FALSE) # lmer model for max
+Max = fixef(mod_max)[2]
+
+mod_avg = lmer(log(`Avg Abs Dev`) ~ Condition + (1 | Subject) + (1 | Exemplar), 
+               data = dt_out, REML = FALSE) # lmer model for avg
+Avg = fixef(mod_avg)[2]
+
+mod_auc = lmer(log(AUC) ~ Condition + (1 | Subject) + (1 | Exemplar), 
+               data = dt_out, REML = FALSE) # lmer model for auc
+Auc = fixef(mod_auc)[2]
+
+# to produce a table 
+cap_efffect = "Relative Effect of Condition"
+coefs = rbind(Dist, Max, Avg, Auc)
+
+coefs %>% 
+  as.tibble() %>%
+  mutate (Model = c("Total Distance", "Max Abs Dev", "Avg Abs Dev", "AUC")) %>%
+  rename("Coefficient" = ConditionTypical) %>%
+  select(Model, Coefficient) %>% 
+  arrange(desc(abs(Coefficient))) %>%
+  knitr::kable(caption = cap_efffect,  digits =2)
+
+```
+
+
+
