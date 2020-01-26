@@ -1,0 +1,365 @@
+---
+title: "Problem Set 5"
+author: "Ningyuan Wang"
+date: "12/4/2019"
+output:
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# libraries
+library(tidyverse)
+library(data.table)
+library(doParallel)
+library(future)
+set.seed(666)
+alpha = .05
+nperm = 1e3
+
+```
+
+## Question 1
+
+In this question , we used the RECS 2015 Data to find disparity between urban and rural areas
+in each census division in terms of the proportion of homes with internet access. 
+
+With the table below, we concluded that Mountain South has the largest disparity between urban and rural areas in terms of the proportion of homes with internet access.
+```{r, echo= FALSE }
+# read in the data
+recs = fread("https://www.eia.gov/consumption/residential/data/2015/csv/recs2015_public_v4.csv")
+
+# replicate weights
+weights = recs[, c('DOEID', paste0('BRRWT', 1:96)), with = FALSE] # extract columns
+weights_long = melt(weights, id_vars = "DOEID", measure.vars = c(paste0('BRRWT', 1:96)), 
+                    variable.name = "repl", value.name = "w") %>% rename(id = DOEID)
+
+# recode division
+divisions = c("New England",
+             "Middle Atlantic",
+             "East North Central",
+             "West North Central",
+             "South Atlantic",
+             "East South Central",
+             "West South Central",
+             "Mountain North",
+             "Mountain South",
+             "Pacific")
+recs[, Division := factor(DIVISION, 1:10, divisions)]
+# reduce the dataset 
+internet = recs[, .(id = DOEID, w = NWEIGHT, x = 100*INTERNET, Division,
+                    urban = UATYP10 %in% c("U", "C"))]
+
+# compute point estimate
+pe = internet[, .(est = sum(w*x)/sum(w)), keyby = .(Division, urban)] %>%
+  .[, .(Est = abs(est[1] - est[2])), keyby = .(Division)] %>%
+  .[order(-Est)]
+  
+
+# replicate estimate
+pe_r = merge(weights_long, internet[, -"w", with = FALSE], by = "id")%>%
+  .[, .(est = sum(w*x) / sum(w)), keyby = .(repl, Division, urban)] %>%
+  .[, .(r = abs(est[2] - est[1])), keyby= .(repl, Division)]
+
+
+# standard error and confidence interval
+cap1 = "**Disparity between urban and rural areas of the proportion of homes with internet**"
+merge(pe_r, pe, by = c("Division"))%>%
+  .[, .(Est = round(Est[1],3), 
+        SE = round((sqrt(mean({r - Est}^2)) *2), 3)), Division]%>%
+  .[, CI := sprintf( '(%4.3f, %4.3f)', 
+                     Est - qnorm(.975) * SE, Est + qnorm(.975) * SE)] %>%
+  .[order(-Est)]  %>% 
+  knitr::kable(align = "r", cap = cap1)
+
+
+
+
+```
+
+
+
+## Question 2 
+
+In question 2, we used data.table to clean and analyze the DNA methylation data, as well as answered the following questions. 
+
+In part a - c, our aimed to downloaded the data and managed it into a data table. 
+
+Downloading and inspecting the first 100 rows at the command line. we noticed that the sample count was 786020, but the total line was 786090. There were 69 lines of header information. In other words, the first sample was on the line 70.
+
+Finally, we made a data table with 33348 samples (only including the samples with the chromosomal locations beginning with "ch") and 4 columns representing probe id, sample id, value and sample group (sample group was created referring to the sample id). The first several lines of data table shows below. 
+
+```{bash, eval = FALSE, include = FALSE}
+wget "ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE138nnn/GSE138311/matrix/GSE138311_series_matrix.txt.gz"
+gunzip GSE138311_series_matrix.txt.gz # uncompress the data
+head -n 100 GSE138311_series_matrix.txt
+
+wc -l GSE138311_series_matrix.txt #786090
+```
+
+
+```{r, include=FALSE}
+# b.
+
+tb = fread("./GSE138311_series_matrix.txt", skip = 68) #skip the information
+names(tb)
+dim(tb) # 786020 * 14
+tb =  tb %>% .[ID_REF %like% "^ch", ]
+which(tb[ , colSums(is.na(tb)) == nrow(tb)]) # find the column with all NAs 
+
+tb = tb %>%
+    .[, -"GSM4105199", with = FALSE]  %>%
+    melt(., id_vars = "ID_REF", measure.vars = c(paste0('GSM', 4105187:4105198)),
+         variable.name = "sample", value.name = "value") %>% rename(probe = ID_REF)
+# c.
+tb = tb[, `:=`(sample_group = 1L * {sample %in% c(paste0('GSM', 4105187:4105193))})][]
+```
+
+```{r, echo = FALSE}
+ head(tb)
+```
+
+
+In part d - e, we created a new data table by computing t-statistic comparing the difference in means between groups for each unique probe. Then, we added a column by reference assigning probes to groups using the first 5 digits of the probe. 
+
+In the new table, there were 2779 rows representing probe levels and 4 columns representing probe, n (number of samples in each probe), t_stat, and probe group. Part of the table shows below. 
+```{r,  include  = FALSE}
+# d.
+t_stats = tb[, .(est = mean(value), s = sd(value), n = length(value)),
+               by = .(probe, sample_group)] %>%
+    .[, .( n = sum(n),
+           t = (est[1] - est[2]) / ((sqrt(sum((n-1) * s^2) / (sum(n) - 2))) * sqrt(sum(1/n)))),
+      by = .(probe)]
+
+# e.
+t_stats = t_stats[, probe_group := str_extract(probe, "^.{5}")][]
+```
+
+```{r, echo = FALSE}
+head(t_stats)
+```
+
+
+In part f, we computed the proportion of probes within each probe group that were nominally significant at the 5% level assuming a two-tailed test. The figure below shows the percentages for probe groups. We noticed that group ch.14 standed out as potentially over-represented. 
+
+
+```{r, include= FALSE}
+#f.
+proportion =   t_stats[, q := qt( 1 - alpha/2 , df = n-2)] %>%
+  .[, `:=`(sig = 1L * {abs(t) > q})] %>%
+  .[, .( proportion =  sum(sig) / length(sig) * 100), by = .(probe_group)] %>%
+  .[order(-proportion)]
+```
+
+```{r, echo = FALSE}
+proportion %>% ggplot(., aes(x=probe_group, y = proportion)) +
+  geom_bar(fill= rgb(0,0,1,.5), stat="identity")+
+  ylab("Proportion of Probes") +
+  xlab("Probe Group")
+cap = paste0(
+  "*Proportion of probes within each probe group that are moninally significant* ",
+  "The figure shows the proportion of probes within each probe group that are",
+  "nominally significant at the 5% level assuming a two-tailed t test. ",
+  "group 'ch.14' stands out as potentially over-represented."
+)
+```
+
+
+
+In part g, we deveploed a function to assess the statistical significance of each probe group with permutation tests. The function reuturned to t scores with certain type (two-tailled, greater, or lesser). 
+
+```{r}
+compute_t = function(table, type = c("two-tailed", "greater", "lesser"),  permute = c(TRUE, FALSE)){
+  # the function serves use permutation test to assess the statistical significance
+  # of each probe group with three moethods.
+  # input: a data table on DNA methylation. We also need type of the statistics 
+  # and logical flag for permutation test
+  # output: a list of t-scores for each probe group with certain type 
+
+  
+  # a. compute t-statistic for each probe
+  ti =  table[, .(est = mean(value), s = sd(value), n = length(value)), 
+                    by = .(probe, sample_group)] %>% 
+    .[, .( n = sum(n), df = sum(n) -2,
+           t = (est[1] - est[2]) / ((sqrt(sum((n-1) * s^2) / (sum(n) - 2))) * sqrt(sum(1/n)))),
+      by = .(probe)] %>%
+    .[, probe_group := str_extract(probe, "^.{5}")] 
+
+
+  
+  #b. permutation: resampling without replacement
+  if (permute == TRUE){  # flag is on
+
+    sample_list = c(1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0)
+    table = table[, .(probe, sample, value,
+              group_p = rep(sample(sample_list, replace = FALSE), times = length(unique(probe))))]%>%
+      .[, probe_group := str_extract(probe, "^.{5}")] 
+
+    # update ti after permutation test
+    ti =  table[, .(est = mean(value), s = sd(value), n = length(value)),
+                by = .(probe, group_p)] %>%
+      .[, .( n = sum(n), df = sum(n) -2,
+             t = (est[1] - est[2]) / ((sqrt(sum((n-1) * s^2) / (sum(n) - 2))) * sqrt(sum(1/n)))),
+        by = .(probe)] %>%
+      .[, probe_group := str_extract(probe, "^.{5}")]
+  }
+
+  
+  # c. compute statistics for each probe group
+  
+  # compute all quantities in the table t_all:
+    # g: numer of probes in a given probe group 
+    # tq_abs: alpha-quantile from t-distribution with two-tailed method
+    # tq_up: alpha-quantile from t-distribution with greater method
+    # tq_down: alpha-quantile from t-distribution with lesser method
+  
+
+  t_all = ti[, .(g = .N, t, probe, probe_group, df = df,
+                 tq_abs = qt(1 - alpha/2, df), 
+                  tq_up = qt(1 - alpha, df), 
+                 tq_down = qt(alpha, df)), 
+             by = .(probe_group)]
+  
+  # compute t scores with three methods seperately
+  
+    # two-tailed
+  if (type == "two-tailed"){
+    t_out = t_all[, `:=`(ind_abs = 1L * {abs(t) > tq_abs })] %>%
+      .[, .( t_abs = 1/g * sum(abs(t) * ind_abs)), by = "probe_group"] %>% 
+      setkey(., "probe_group") %>% 
+      unique(.)
+  }
+  
+  
+    # greater
+  if(type == "greater"){
+    t_out = t_all[, `:=`(ind_up = 1L * {t > tq_up })]  %>%
+      .[, .( t_up = 1/g * sum(t * ind_up)), by = "probe_group"] %>% 
+      setkey(., "probe_group") %>%
+      unique(.)
+
+  }
+  
+   # lesser
+  if(type == "lesser"){
+    t_out = t_all[, `:=`(ind_down = 1L * {t < tq_down })]  %>%
+      .[, .(t_down = 1/g * sum(t * ind_down)), by = "probe_group"] %>% 
+      setkey(., "probe_group") %>%
+      unique(.)
+  }
+  
+  return(t_out)
+}
+
+```
+
+In part h - j, we used the above function to assess the significance with three types of methods seperately, with sequential and parallel computing methods. We also counted the time of doing procedures. Tables shows the p-values of each probe group with permutation tests.
+
+```{r, include=FALSE}
+# h
+# t scores without permutation test
+t1 = compute_t(table = tb, type = "two-tailed", FALSE)
+t2 = compute_t(table = tb, type = "greater", FALSE)
+t3 = compute_t(table = tb, type = "lesser", FALSE)
+```
+
+
+```{r }
+# h
+# with permutation test for  two-tailed scores for 1000 times
+system.time({
+perm_t1 = replicate(nperm, compute_t(table = tb, type = "two-tailed", TRUE))
+})
+
+```
+
+
+```{r, echo ==FALSE}
+# create a matrix for permutation results
+perm_t1_mat = matrix(unlist(perm_t1), ncol = nperm * 2)
+delete_cols = seq(1, ncol(perm_t1_mat), 2)
+perm_t1_mat = perm_t1_mat[, -delete_cols]
+perm_t1_mat = apply(perm_t1_mat, c(1, 2), as.numeric)
+
+# compute p-value
+t1_obs = as.numeric(t1$t_abs)
+p_abs = {1 + rowSums(abs(t1_obs) <= abs(perm_t1_mat))} / {1 + nperm }
+```
+
+```{r, echo = FALSE}
+cap2 = "**statistical significance of each probe group with two-tailed T scores **"
+data.table(`probe group` = t1$probe_group, `p value` = round(p_abs, 3))  %>% 
+  knitr::kable(align = "r", cap = cap2)
+
+```
+
+
+```{r}
+# #i
+# with permutation test for  greater t scores for 1000 times using mclapply for parallelism
+system.time({
+  perm_t2 = parallel::mclapply(1:nperm, function(i) compute_t(table = tb, type = "greater", TRUE))
+}
+)
+```
+
+```{r, echo = FALSE}
+# create a matrix for permutation results
+perm_t2_mat = matrix(unlist(perm_t2), ncol = nperm * 2)
+delete_cols = seq(1, ncol(perm_t2_mat), 2)
+perm_t2_mat = perm_t2_mat[, -delete_cols]
+perm_t2_mat = apply(perm_t2_mat, c(1, 2), as.numeric)
+
+# compute p-value
+t2_obs = as.numeric(t2$t_up)
+p_up = {1 + rowSums(abs(t2_obs) <= abs(perm_t2_mat))} / {1 + nperm }
+```
+
+
+```{r, echo=FALSE}
+cap3 = "**statistical significance of each probe group greater T scores **"
+data.table(`probe group` = t2$probe_group, `p value` = round(p_up, 3)) %>%
+    knitr::kable(align = "r", cap = cap3)
+  
+
+```
+
+
+```{r}
+# j.
+# with permutation test for lesser t scores for 1000 times using futures for parallelism
+plan(multisession)
+perm_t3 = list()
+system.time({
+for( i in 1: nperm ){
+  perm_t3[[i]] = future({compute_t(table = tb, type = "lesser", TRUE)})
+  }
+}
+)
+
+# extract values
+perm_t3 = rbindlist( lapply(perm_t3, value) )
+```
+
+```{r, echo = FALSE}
+# create a matrix for permutation results
+perm_t3_mat = matrix(unlist(perm_t3), ncol = nperm * 2)
+delete_cols = c(1:nperm)
+perm_t3_mat = perm_t3_mat[, -delete_cols]
+perm_t3_mat = apply(perm_t3_mat, c(1, 2), as.numeric)
+
+# compute p-value
+t3_obs = as.numeric(t3$t_down)
+p_down = {1 + rowSums(abs(t3_obs) <= abs(perm_t3_mat))} / {1 + nperm }
+
+```
+
+```{r, echo = FALSE}
+cap4 = "**statistical significance of each probe group with lesser  T scores **"
+data.table(`probe group` = t3$probe_group, `p value` = round(p_down, 3)) %>%
+  knitr::kable(align = "r", cap = cap4)
+
+```
+
+
