@@ -1,0 +1,153 @@
+---
+title: "Problem Set 4"
+author: "Ningyuan Wang"
+date: "11/25/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+
+```
+
+## Question 1
+In this question, we use Stata to fit linear mixed model to explore how each curvature measure differs by condition. In the models for every curvature, "condition" is the only fixed effect, and "subject" and "exemplar" are random intercept effects. The curvatures were meaasured on a log scale. 
+
+The table shows the relative effect and confidence interval for "condition" in every model and 95% Wald confidence interval.  In this experiment, the atypical condition had the largest effect on the average absolute deviation measure, which is was 1.92 on average in the atypical condition. 
+```{r, echo = FALSE, message=FALSE}
+q1_tb = readr::read_delim('ps4_q1_tb.csv', delim = ',') 
+cap1 = '**Relative effect of typical condition on each curvature measure**'
+q1_tb %>% transmute( Measure = c("Average Absolute Deviation",
+                                 "Maximum Absolute Deviation",
+                                 "AUC", "Total Distance"), 
+                     'Relative Effect' = round(relative_effect,3),
+                     Lower = round(lwr,3), Upper = round(upr,3))%>%
+  knitr::kable(  cap = cap1, align = 'c'  )
+```
+
+## Question 2
+In this question, we use RECS 2015 data to determine which census division has the largest disparity between urban and rural areas in terms of the proportion of homes with internet access. 
+
+With the results below, Mountain South census division has the largest disparity between urban and rural areas in terms of the proportion of homes with internet access, which is 18.517 on average. 
+
+```{r, echo = FALSE, message=FALSE}
+q2_tb = readr::read_delim('q2_summary.csv', delim = ',') 
+cap2 = '**Disparity between urban and rural areas of the proportion of homes with internet**'
+q2_tb %>% transmute(Division = division, Disparity = round(diff, 3),
+                    'Standard Error' = round(se, 3), Lower = round(lower, 3),
+                    Upper = round(upper, 3)) %>%
+  arrange(-Disparity) %>%
+  knitr::kable(  cap = cap2, align = 'c'  )
+```
+
+## Question 3
+In this question, we use data from the 2005-2006 NHANES survey to answer the question "are people in the US more likely to drink water on a weekday than a weekend day?"
+
+### a.
+In part a, we organize the data into a tidy dataframe (there are some missing values in the current dataframe and we will organize them in part b) in Stata. In the dataframe, each row represents a single response day for a study participant. The variables are:
+
+* respondent id (seqn)
+* survey day(sd): 1 or 2
+* intake day of the week(intake): 1 - 7
+* weekday(weekday): 0 or 1
+* any water drank the previous day(water_drank): 0 or 1
+* how much water drank in the previous day(water) *optional
+* gender(gender): 1(male) or 2(female)
+* age(age)
+* poverty income ratio(pir)
+* whether the exam was done in winter(winter): 1(yes) or 2(no)
+
+### b.
+In part b, we removed the response with any missing variable and then compute the mean values for the variables age and pir. the mean value for age is 27.98, for pir is 2.40 among the valid responses (i.e. no missing value). Then, we centered above two variables around the mean values. After that, both centered mean age and centered mean pir are around 0.
+
+
+### c.
+In part c, we used the data of day 1 and fitted a logistic regression model investigating how the odds of drinking water are change for weekdays relative to weekends, while controlling for winter, age and age squared (centered version), gender, and centered pir. We also explored the average marginal effect for each of the variable in the probability scale. 
+
+In addition to above controlling variables putting in the model as predictors, we also put the binary variable "weekday" in the model since it is an important preodictor to explain the response. 
+
+The tables below show odds ratio for each term and average marignal effects for each independent variable and their 95% confidence intervals. 
+
+With the result of the logistic model, we see that US people are more likely to drink water on a weekday than a weekend day.
+
+```{r,echo = FALSE, message=FALSE, warning=FALSE}
+# odds ratio
+cap3 = '**Odds ratio for each term in the model**'
+q3_coef = readxl::read_excel("ps4_q3_c_coef.xls")%>%t()
+colnames(q3_coef) <- c("term", "or","se", "z", "pvalue", "lwr", "upr", "df", "crit","eform")
+q3_coef = q3_coef[-1, ] # remove the first row
+q3_coef %>% 
+  as_tibble()%>%
+  select(Term  = term, 'Odds Ratio' = or, Lower = lwr, 2, 
+         Upper = upr) %>%
+  slice(c(2, 3, 4, 6, 7, 9, 10 )) %>% 
+  mutate_at(vars(`Odds Ratio`, Lower, Upper), 
+            funs(as.numeric)) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  transmute(Term = c("Winter", "Age", "Age^2", "Gender", "PIR", "Weekday", "Intercept"),
+            `Odds Ratio`, Lower, Upper) %>%
+  knitr::kable(  cap = cap3, align = 'c'  )
+  
+
+```
+
+```{r,echo = FALSE, message=FALSE, warning=FALSE}
+# AME
+cap4 = '**Average marginal effects for each independent variable**'
+q3_ame =  readxl::read_excel("ps4_q3_c_ame.xls") %>% t()
+colnames(q3_ame) <- c("est", "se")
+q3_ame = q3_ame[-1, ] # remove the first row
+q3_ame %>%
+  as_tibble()%>%
+  slice(2, 3, 5, 6, 8) %>%
+  mutate_at(vars(est, se), 
+            funs(as.numeric)) %>%
+  transmute(Variable = c("Winter", "Age", "Gender", "PIR", "Weekday"),
+         Estimate = est, Lower = est - 1.96 *se, Upper = est + 1.96 * se) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  knitr::kable(  cap = cap4, align = 'c'  )
+
+```
+
+### d.
+In part d, we used the data from both interview days and fitted a mixed logistic model including a random intercept for each respondent. Likewise, the model aimed to investigating how the odds of drinking water are change for weekdays relative to weekends, while controlling for winter, age and age squared (centered version), gender, and centered pir. We also explored the average marginal effect for each of the variable in the probability scale. Like above, besides those controlling predictors, we also used "weekday" as a predictor to model the response. 
+
+The tables below show odds ratio for each term and average marignal effects for each independent variable and their 95% confidence intervals. 
+
+With the mixed logistic model, we also find that US people are more likey to drink water in a weekday than a weekend day. 
+```{r,echo = FALSE, message=FALSE, warning=FALSE}
+# odds ratio
+q3_d_coef = readxl::read_excel("ps4_q3_d_coef.xls")%>%t()
+colnames(q3_d_coef) <- c("est", "se")
+q3_d_coef = q3_d_coef[-1, ] # remove the first row
+q3_d_coef %>%
+  as_tibble() %>%
+  slice(2, 3, 4, 6, 7, 9, 10, 11) %>% 
+  mutate_at(vars(est, se), 
+            funs(as.numeric)) %>%
+   transmute(Term = c("Winter", "Age", "Age^2", "Gender", "PIR", "Weekday", "Intercept", "Random Effect"), `Odds Ratio` = exp(est), Lower = exp(est - 1.96 *se), 
+             Upper = exp(est + 1.96 * se)) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  knitr::kable(  cap = cap3, align = 'c'  )
+```
+
+
+```{r,echo = FALSE, message=FALSE, warning=FALSE}
+# AME
+q3_d_ame =  readxl::read_excel("ps4_q3_d_ame.xls") %>% t()
+colnames(q3_d_ame) <- c("est", "se")
+q3_d_ame = q3_d_ame[-1, ] # remove the first row
+q3_d_ame %>%
+  as_tibble()%>%
+  slice(2, 3, 5, 6, 8) %>%
+  mutate_at(vars(est, se), 
+            funs(as.numeric)) %>%
+  transmute(Variable = c("Winter", "Age", "Gender", "PIR", "Weekday"),
+         Estimate = est, Lower = est - 1.96 *se, Upper = est + 1.96 * se) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  knitr::kable(  cap = cap4, align = 'c'  )
+```
+
+
+With above two logisitic models, we have the same conclusion that US people are more likely to drink water in a weekday than a weekend day. In terms of odds ratios for each term in two models, they perform stably and have the same effect in either model (i.e. the signs of the estimates are the same). The variable gender has a relaative obvious change from the first model (with day 1 data, no random intercept) to the second one(with both interview days data, include random intercept of respondents). In terms of average marginal effect, the variable winter has a significnat decrease in average marignal effect from the first model to the second one, it may because the variable winter has a relationship to the random intercept of respondents.  
