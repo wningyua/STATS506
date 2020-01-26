@@ -1,0 +1,192 @@
+---
+title: "midterm_ec"
+author: "Ningyuan Wang"
+date: "11/01/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+```
+
+## Question 2
+c. 
+```{bash, eval = FALSE}
+grep -n "spread(\|gather(" *.{R,Rmd}
+```
+
+## Question 4
+d.
+```{r}
+Orange %>%
+  group_by(Tree) %>%
+  summarize(growth = max(circumference)/max(age))%>%
+  summarize(avg_growth = mean(growth))
+```
+
+## Question 5
+
+a. 
+```{r}
+about = function(x, ...){
+  UseMethod('about')
+}
+```
+
+b.
+```{r}
+about.default = function(x){
+  str(x, given.attr = FALSE)
+}
+```
+
+c.
+```{r}
+about.data.frame = function(x){
+  stopifnot('data.frame' %in% class(x)) # the input should be in the class of
+   # dataframe
+  P_num = dplyr::select_if(x, is.numeric) # to get numeric variables 
+  P_fac = dplyr::select_if(x, is.factor) # to get factors
+  l1 = paste0("'", class(x)[1], "': ", nrow(x), " obs of ", ncol(x), " variables") 
+  # l1: a string line, “‘data.frame’: NN obs of PP variables:”
+  l2 = paste0(ncol(P_num), " numeric variable(s): ", paste(names(P_num), collapse = ", ")) 
+  # l2: A string line " PP numeric variables: [V1, V2, V3, ...]"
+  l3 = paste0(ncol(P_fac), " categorical variable(s) ", paste(names(P_fac), collapse = ", ") ) 
+  # l3: a string line " PP factor variables: [V1, V2, V3, ...]"
+  cat(c(l1, l2, l3), sep  = "\n") #return several 3 lines with above information
+}
+```
+
+d.
+```{r}
+about.tbl = function(x)  {
+  stopifnot('tbl' %in% class(x)) # the input should be in the class of tbl
+  NextMethod()
+  P_list = dplyr::select_if(x, is.list) # to get list columns
+  l4 = paste0(ncol(P_list), " list column(s): ", paste(names(P_list), collapse = ", "))
+  # l4 is a string line with number and names of list columns
+  cat(l4, sep = "\n") 
+  # the function return four lines with above information
+}
+```
+
+
+## Question 6
+```{r, include = FALSE}
+# libraries: ------------------------------------------------------------------
+library(tidyverse)
+
+# Functions to simulate a inning or nine: -------------------------------------
+sim_inning = function(n = 1, team = c('mw', 'dd', 'tt')){
+  # simulates the number of runs scored by "team" in a single inning
+  # inputs: 
+  #   team - one of 'mw', 'dd', or 'tt' 
+  #   n - an integer for the number of innings to simulate
+  # outputs: a length n numeric vector with a simulated number of runs scored
+  #          for each of n innings.
+  team = match.arg(team)
+  
+  if ( team == 'mw' ) {
+    # number of batters that walk before there are three outs
+    # the fourth and each subsequent walk scores a run
+    return( pmax( rnbinom(n, 3, .6) - 3, 0) )
+  }
+  
+  if ( team == 'dd' ) {
+    # number of batters that double before there are three outs
+    # the second and subsequent doubles score runs
+    return( pmax( rnbinom(n, 3, .8) - 1, 0) )
+  }
+  
+  if ( team == 'tt' ) {
+    # the number of batters that hit home runs before there are three outs
+    # each homerun scores a run
+    return( rnbinom(n, 3, .9) )
+  }
+  
+}
+```
+
+```{r}
+sim_nine = function( n = 1, team = c('mw', 'dd', 'tt') ) {
+  team = match.arg(team)
+  
+#<Task 1> Improve the block of code using vectorization. 
+  runs = matrix(data = sim_inning( 9 * n ), nrow = 9, ncol = n)
+  colSums(runs)
+}
+
+```
+
+```{r, include = FALSE}
+extras = function(team1, team2) {
+  # This function simulates the outcome for games tied after nine innings.
+  # Inputs: 
+  #   team1, team2 - character strings giving the teams to simulate the game
+  #    outcome for, conditional on the game being tied after 9 innings.
+  #   each in "mw", "dd", or "tt"
+  # Outputs: the name of the team that wins, either team1 or team2.
+  r1 = function() eval( call( paste0('sim_inning_', team1 ) ) ) 
+  r2 = function() eval( call( paste0('sim_inning_', team2 ) ) )
+  
+  while ( TRUE ) {
+    top = sim_inning( n=1, team=team1)
+    bottom = sim_inning( n=1, team =team2)
+    if ( top > bottom ) {
+      return(team1)
+    } else if ( top < bottom ) {
+      return(team2)
+    }
+  }
+}
+
+# Generate a Monte Carlo sample of games: -------------------------------------
+mcrep = 1e4
+mchalf = mcrep / 2
+games_mw = sim_nine(mcrep, team = 'mw')
+games_dd = sim_nine(mcrep, team = 'dd')
+games_tt = sim_nine(mcrep, team = 'tt')
+```
+
+
+```{r}
+# <Task 2> Estimate the average number of runs scored per game by each team: 
+mean(games_mw)# for team mw
+mean(games_dd)# for team dd
+mean(games_tt)# for team tt
+```
+
+```{r, include= FALSE}
+# Compute the approximate winning probabilities: ------------------------------
+# MW vs DD
+mw_vs_dd = ifelse( games_mw[1:mchalf] > games_dd[1:mchalf], 'mw', 'dd')
+mw_vs_dd_ties = which( games_mw[1:mchalf] == games_dd[1:mchalf] )
+mw_vs_dd[ mw_vs_dd_ties ] = 
+  sapply( mw_vs_dd_ties, function(i) extras('mw', 'dd') )
+
+# MW vs TT
+mw_vs_tt = ifelse( games_mw[{mchalf + 1}:mcrep] > games_tt[1:mchalf],
+                   'mw', 'tt')
+mw_vs_tt_ties = which( games_mw[{mchalf + 1}:mcrep] == games_tt[1:mchalf] )
+mw_vs_tt[ mw_vs_tt_ties ] = 
+  sapply( mw_vs_tt_ties, function(i) extras('mw', 'tt') )
+
+# DD vs TT
+dd_vs_tt = ifelse( games_dd[{mchalf + 1}:mcrep] > games_tt[{mchalf + 1}:mcrep],
+                   'dd', 'tt')
+dd_vs_tt_ties =
+  which( games_dd[{mchalf + 1}:mcrep] == games_tt[{mchalf + 1}:mcrep] )
+dd_vs_tt[ dd_vs_tt_ties ] = 
+  sapply( dd_vs_tt_ties, function(i) extras('dd', 'tt') )
+
+```
+
+
+```{r}
+# <Task 3> Expected winning totals in a 162 game season for each team
+mw_wins = (mean(mw_vs_dd == "mw") + mean(mw_vs_tt == "mw"))*81 
+dd_wins = (mean(mw_vs_dd == "dd") + mean(dd_vs_tt == "dd"))*81
+tt_wins = (mean(mw_vs_tt == "tt") + mean(dd_vs_tt == "tt"))*81
+```
+
